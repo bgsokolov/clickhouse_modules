@@ -1,0 +1,68 @@
+---
+- hosts: localhost
+  #connection: local
+  become: false
+  gather_facts: false
+  run_once: true
+  vars:
+    clickhouse_user: 'default'
+    clickhouse_password: 'MyStrongPass'
+    #clickhouse_endpoint: 'clickhouse-server-proxy.net'
+    clickhouse_secure_connect: false  # true for tls connections on port 9440
+    ### Clickhouse users ###
+    clickhouse_sql_users:
+      # DB admin user
+      - user_name: 'db_admin'
+        user_password_hash: 'a2015a1f1eb6a39f615b47de969376b367534b465a41dd7c98e5b1e00a3bdac1' # hash from 'dbAdminPass'
+        user_roles: ['db_admin_role']
+      # Application user
+      - user_name: 'app_user'
+        user_password: 'appUserPass'
+        user_roles: ['reader_role', 'writer_role']
+    ### Clickhouse grants ###
+    clickhouse_grants:
+      # DB admin role
+      - grantee_name: 'db_admin_role'
+        grants: ['ALL']
+      # Reader role
+      - grantee_name: 'reader_role'
+        grants: [SELECT, SHOW]
+        databases: ['main']
+        replace_grants: true
+      # Writer role
+      - grantee_name: 'writer_role'
+        grants: [INSERT, UPDATE, OPTIMIZE]
+        databases: ['main']
+        replace_grants: true
+
+  tasks:
+  - name: Create clickhouse user
+    clickhouse_users:
+      address: "{{ clickhouse_endpoint | default(ansible_host) }}"
+      secure_connect: "{{ clickhouse_secure_connect | default(false) }}"
+      login_user: "{{ clickhouse_user }}"
+      login_password: "{{ clickhouse_password }}"
+      user_name: "{{ item.user_name }}"
+      user_password_hash: "{{ item.user_password_hash if item.user_password_hash is defined else (item.user_password | hash('sha256')) }}"
+      user_state: "{{ item.user_state | default('present') }}"
+      user_roles: "{{ item.user_roles | default([]) }}"
+      init_roles: "{{ item.init_roles | default(true) }}"
+    loop: "{{ clickhouse_sql_users }}"
+    when: clickhouse_sql_users | length > 0
+    tags: [clickhouse-users, ch-users, sql-users, users]
+
+  - name: Apply grants for users and roles
+    clickhouse_grants:
+      address: "{{ clickhouse_endpoint | default(ansible_host) }}"
+      secure_connect: "{{ clickhouse_secure_connect | default(false) }}"
+      login_user: "{{ clickhouse_user }}"
+      login_password: "{{ clickhouse_password }}"
+      grantee_name: "{{ item.grantee_name }}"
+      grants: "{{ item.grants }}"
+      databases: "{{ item.databases | default(['default']) }}"
+      tables: "{{ item.tables | default(['*']) }}"
+      replace_grants: "{{ item.replace_grants | default(false) | bool }}"
+      revoke_grants: "{{ item.revoke_grants | default(false) | bool }}"
+    loop: "{{ clickhouse_grants }}"
+    when: clickhouse_grants | length > 0
+    tags: [clickhouse-grants, ch-grants, grants]
