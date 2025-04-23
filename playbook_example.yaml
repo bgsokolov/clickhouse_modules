@@ -36,7 +36,7 @@
         replace_grants: true
 
   tasks:
-  - name: Create clickhouse user
+  - name: Create clickhouse users
     clickhouse_users:
       address: "{{ clickhouse_endpoint | default(ansible_host) }}"
       secure_connect: "{{ clickhouse_secure_connect | default(false) }}"
@@ -49,7 +49,7 @@
       init_roles: "{{ item.init_roles | default(true) }}"
     loop: "{{ clickhouse_sql_users }}"
     when: clickhouse_sql_users | length > 0
-    tags: [clickhouse-users, ch-users, sql-users, users]
+    tags: [create-users]
 
   - name: Apply grants for users and roles
     clickhouse_grants:
@@ -65,4 +65,16 @@
       revoke_grants: "{{ item.revoke_grants | default(false) | bool }}"
     loop: "{{ clickhouse_grants }}"
     when: clickhouse_grants | length > 0
-    tags: [clickhouse-grants, ch-grants, grants]
+    tags: [grants]
+
+  - name: Drop clickhouse users
+    clickhouse_users:
+      address: "{{ clickhouse_endpoint | default(ansible_host) }}"
+      secure_connect: "{{ clickhouse_secure_connect | default(false) }}"
+      login_user: "{{ clickhouse_user }}"
+      login_password: "{{ clickhouse_password }}"
+      user_name: "{{ item.user_name }}"
+      user_state: absent
+    loop: "{{ clickhouse_sql_users }}"
+    when: clickhouse_sql_users | length > 0
+    tags: [never, drop-users]
