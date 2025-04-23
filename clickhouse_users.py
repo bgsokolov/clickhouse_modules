@@ -8,7 +8,7 @@ __metaclass__ = type
 
 DOCUMENTATION = r'''
 ---
-module: clickhouse_query
+module: clickhouse_users
 
 short_description: The module to create and update clickhouse users.
 
@@ -20,10 +20,16 @@ apply quotas, profiles and roles.
 options:
     address:
         description:
-          - Listen clickhouse server IP address.
+          - Clickhouse server IP address.
         required: false
         type: str
         default: 127.0.0.1
+    secure_connect:
+        description:
+          - Secure connection settings.
+        required: false
+        type: bool
+        default: false
     login_user: 
         description:
           - Clickhouse user for login to DB.
@@ -45,12 +51,23 @@ options:
           - Clickhouse new user password.
         required: false
         type: str
+    user_password_hash:
+        description:
+          - Clickhouse new user password hash sha256.
+        required: false
+        type: str
     user_roles:
         description:
           - Clickhouse user roles.
         required: false
         type: list
         elements: str
+    init_roles:
+        description:
+          - Create roles in case if they are not exist.
+        required: false
+        type: bool
+        default: false
     user_profile:
         description:
           - Clickhouse user profile.
@@ -172,7 +189,7 @@ def ch_user_quotas(ch_connect, user, quota):
     return user_quotas, user_has_quota, quota_applied_users
 
 
-def create_update_user(ch_connect, user, password, roles, quota, profile):
+def create_update_user(ch_connect, user, password, password_hash, roles, init_roles, quota, profile):
     # Get user status
     user_exists = ch_user_exists(ch_connect, user)
     # Returned values
@@ -185,7 +202,10 @@ def create_update_user(ch_connect, user, password, roles, quota, profile):
     }
     # Create user
     if not user_exists:
-        user_query = f"CREATE USER {user} IDENTIFIED WITH sha256_password BY '{password}'"
+        if password:
+            user_query = f"CREATE USER '{user}' IDENTIFIED WITH sha256_password BY '{password}'"
+        elif password_hash:
+            user_query = f"CREATE USER '{user}' IDENTIFIED WITH sha256_hash BY '{password_hash}'"
         query_list.append(user_query)
     # Add quota to user
     if quota != '':
@@ -209,9 +229,18 @@ def create_update_user(ch_connect, user, password, roles, quota, profile):
         user_roles, user_has_roles = ch_user_roles(ch_connect, user, roles)
         user_status["user_roles"] = user_roles
         user_status["user_has_roles"] = user_has_roles
+
+        # Create roles if needed
+        if init_roles and not user_has_roles:
+            for role in roles:
+                create_role_query = f"CREATE ROLE IF NOT EXISTS {role}"
+                query_list.append(create_role_query)
+
+        # Grant roles to user
         if not user_has_roles:
-            roles_query = f"GRANT {', '.join(roles)} to {user}"
+            roles_query = f"GRANT {', '.join(roles)} to '{user}'"
             query_list.append(roles_query)
+
     # Run queries
     if query_list:
         [ch_connect.execute(query) for query in query_list]
@@ -223,7 +252,7 @@ def delete_user(ch_connect, user):
     user_exists = ch_user_exists(ch_connect, user)
     if not user_exists:
         return {"changed": False, "user_exists": user_exists}
-    query = f"DROP USER {user}"
+    query = f"DROP USER '{user}'"
     ch_connect.execute(query)
     return {"changed": True, "query": query, "user_exists": user_exists}
 
@@ -232,13 +261,16 @@ def main():
     # Module's arguments settings
     module_args = {
         "address": {"type": "str", "required": False, "default": "127.0.0.1"},
+        "secure_connect": {"type": "bool", "required": False, "default": False},
         "login_user": {"type": "str", "required": False, "default": "default"},
         "login_password": {"type": "str", "required": False, "default": "", "no_log": True},
         "user_name": {"type": "str", "required": True},
         "user_password": {"type": "str", "required": False, "default": "", "no_log": True},
+        "user_password_hash": {"type": "str", "required": False, "default": "", "no_log": True},
         "user_quota": {"type": "str", "required": False, "default": ''},
         "user_profile": {"type": "str", "required": False, "default": ''},
         "user_roles": {"type": "list", "required": False, "default": []},
+        "init_roles": {"type": "bool", "required": False, "default": False},
         "user_state": {"type": "str", "required": False, "default": "present"}
     }
 
@@ -265,22 +297,29 @@ def main():
 
     # Module parameters
     address = module.params['address']
+    secure_connect = module.params['secure_connect']
     login_user = module.params['login_user']
     login_password = module.params['login_password']
     user = module.params['user_name']
     password = module.params['user_password']
+    password_hash = module.params['user_password_hash']
     roles = module.params['user_roles']
+    init_roles = module.params['init_roles']
     quota = module.params['user_quota']
     profile = module.params['user_profile']
     state = module.params['user_state']
 
+    # Check parameters set correctly
+    if password and password_hash:
+        return module.fail_json(f"Only one password type can be set: 'user_password' or 'user_password_hash'")
+
     # Check connection to Clickhouse server
-    ch_connect = CHClient(host=address, user=login_user, password=login_password)
+    ch_connect = CHClient(host=address, user=login_user, password=login_password, secure=secure_connect, verify=False)
 
     # Try to run CRUD actions for the user
     if state == "present":
         try:
-            result = create_update_user(ch_connect, user, password, roles, quota, profile)
+            result = create_update_user(ch_connect, user, password, password_hash, roles, init_roles, quota, profile)
         except ch_errors.ServerException as err:
             db_error = re.findall(r'DB::Exception.+\.', err.message)
             return module.fail_json(to_native(db_error))
